@@ -18,6 +18,16 @@ app.use(cors());
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
 
+// Ensure DB is connected for serverless invocations
+app.use(async (_req, _res, next) => {
+  try {
+    await connectDB();
+  } catch (err: any) {
+    console.error('[DB Middleware] Connection error:', err.message);
+  }
+  next();
+});
+
 // Health Check
 app.get('/health', (_req, res) => {
   res.json({
@@ -32,22 +42,34 @@ app.get('/health', (_req, res) => {
   });
 });
 
-async function bootstrap() {
-  // 1. Connect Database
-  await connectDB();
+app.get('/', (_req, res) => {
+  res.json({
+    name: 'ContentGPT Backend API',
+    status: 'online',
+    version: '1.0.0',
+    endpoints: [
+      '/health',
+      '/api/v1/research/feed',
+      '/api/v1/research/dates',
+      '/api/v1/research/stats',
+      '/api/v1/channels',
+    ],
+  });
+});
 
-  // 2. Initialize Services
-  const researchService = new ResearchService();
-  const channelService = new ChannelService();
+// Initialize Services
+const researchService = new ResearchService();
+const channelService = new ChannelService();
 
-  // 3. Register Routes
-  app.use('/api/v1/research', createResearchRouter(researchService));
-  app.use('/api/v1/channels', createChannelRouter(channelService));
+// Register Routes
+app.use('/api/v1/research', createResearchRouter(researchService));
+app.use('/api/v1/channels', createChannelRouter(channelService));
 
-  // 4. Setup 9 AM / 8 PM Cron Schedulers & 14-day Auto-Purge
-  setupScheduledJobs(researchService);
+// Setup Cron Schedulers
+setupScheduledJobs(researchService);
 
-  // 5. Start Server
+// Only listen locally or when not in Vercel serverless environment
+if (!process.env.VERCEL) {
   app.listen(PORT, () => {
     console.log(`====================================================`);
     console.log(`🚀 ContentGPT Backend running on http://localhost:${PORT}`);
@@ -57,6 +79,6 @@ async function bootstrap() {
   });
 }
 
-bootstrap().catch((err) => {
-  console.error('Fatal bootstrapping error:', err);
-});
+// Export for Vercel Serverless
+export default app;
+module.exports = app;
