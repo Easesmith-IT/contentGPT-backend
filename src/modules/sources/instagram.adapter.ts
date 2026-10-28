@@ -37,13 +37,15 @@ export class InstagramSourceAdapter implements BaseSourceAdapter {
 
         if (!username) continue;
 
+        let postsScraped = 0;
+
         // METHOD 1: RapidAPI Instagram Scraper (if key provided)
-        if (rapidApiKey) {
+        if (rapidApiKey && rapidApiKey.trim()) {
           try {
             const res = await axios.get(`https://instagram-scraper-api2.p.rapidapi.com/v1/posts`, {
               params: { username_or_id_or_url: username },
               headers: {
-                'X-RapidAPI-Key': rapidApiKey,
+                'X-RapidAPI-Key': rapidApiKey.trim(),
                 'X-RapidAPI-Host': 'instagram-scraper-api2.p.rapidapi.com',
               },
               timeout: 10000,
@@ -80,13 +82,18 @@ export class InstagramSourceAdapter implements BaseSourceAdapter {
                 priorityWeight: ch.priorityWeight || 2.0,
                 channelId: ch._id,
               });
+              postsScraped++;
             }
           } catch (apiErr: any) {
-            console.warn(`[InstagramSourceAdapter] RapidAPI call failed for @${username}: ${apiErr.message}`);
+            console.warn(
+              `[InstagramSourceAdapter] RapidAPI call for @${username} returned: ${apiErr.response?.data?.message || apiErr.message}. Executing public feed fallback...`
+            );
           }
-        } else {
-          // METHOD 2: Automated Public Fallback via Google News Feed for public Reels & Posts
-          // Works without requiring any third-party API key
+        }
+
+        // METHOD 2: Automated Public Fallback via Google News Feed for public Reels & Posts
+        // Automatically runs if RapidAPI is not configured or fails (e.g. key unsubscribed)
+        if (postsScraped === 0) {
           try {
             const queries = [
               `site:instagram.com/reel/+${username}`,
