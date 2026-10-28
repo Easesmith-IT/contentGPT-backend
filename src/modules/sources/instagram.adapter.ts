@@ -23,10 +23,18 @@ export class InstagramSourceAdapter implements BaseSourceAdapter {
     const rapidApiHost = process.env.RAPIDAPI_HOST;
 
     try {
-      const igChannels = await MonitoredChannel.find({
+      let igChannels = await MonitoredChannel.find({
         platform: 'INSTAGRAM',
         isActive: true,
       });
+
+      if (!igChannels || igChannels.length === 0) {
+        igChannels = [
+          { channelName: 'Indian Cricket Team', channelUrl: 'https://www.instagram.com/indiancricketteam/', priorityWeight: 2.5 } as any,
+          { channelName: 'Indian Super League', channelUrl: 'https://www.instagram.com/indiansuperleague/', priorityWeight: 2.0 } as any,
+          { channelName: 'Team India', channelUrl: 'https://www.instagram.com/teamindia/', priorityWeight: 2.0 } as any,
+        ];
+      }
 
       for (const ch of igChannels) {
         const username = ch.channelUrl
