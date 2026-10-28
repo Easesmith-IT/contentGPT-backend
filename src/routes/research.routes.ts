@@ -96,6 +96,20 @@ export function createResearchRouter(researchService: ResearchService): Router {
     }
   });
 
+  // POST /api/v1/research/clean-global - Purge any non-India sports news from database
+  router.post('/clean-global', async (_req: Request, res: Response) => {
+    try {
+      const result = await researchService.cleanGlobalItems();
+      res.json({
+        success: true,
+        message: `Purged ${result.removedCount} global non-India items from database.`,
+        data: result,
+      });
+    } catch (err: any) {
+      res.status(500).json({ success: false, error: err.message });
+    }
+  });
+
   // VERCEL CRON ENDPOINTS (Triggered automatically by Vercel Cloud Scheduler)
   router.get('/cron/morning', async (_req: Request, res: Response) => {
     try {
