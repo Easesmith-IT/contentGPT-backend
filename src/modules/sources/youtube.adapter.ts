@@ -3,6 +3,7 @@ import axios from 'axios';
 import { YoutubeTranscript } from 'youtube-transcript';
 import { BaseSourceAdapter, ScrapedItem } from './base.adapter';
 import { MonitoredChannel } from '../../models/MonitoredChannel';
+import { isIndiaSpecificSports } from '../research/india-sports-filter';
 
 export class YoutubeSourceAdapter implements BaseSourceAdapter {
   platformName = 'YOUTUBE' as const;
@@ -18,7 +19,7 @@ export class YoutubeSourceAdapter implements BaseSourceAdapter {
   }
 
   /**
-   * Resolve a channel handle (e.g. https://www.youtube.com/@espn) to channel ID
+   * Resolve a channel handle (e.g. https://www.youtube.com/@starsports) to channel ID
    */
   async resolveChannelId(urlOrHandle: string): Promise<string | null> {
     try {
@@ -28,22 +29,37 @@ export class YoutubeSourceAdapter implements BaseSourceAdapter {
         return parts[1].split('/')[0].split('?')[0];
       }
 
-      // If handle or custom url, fetch html to find channelId
+      // Fetch HTML to find channelId / externalId
       const res = await axios.get(cleanUrl, {
         headers: {
-          'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+          'User-Agent':
+            'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
         },
         timeout: 8000,
       });
 
+      // Modern YouTube externalId
+      const externalMatch = res.data.match(/"externalId":"(UC[a-zA-Z0-9_-]{22})"/);
+      if (externalMatch && externalMatch[1]) {
+        return externalMatch[1];
+      }
+
+      // Classic channelId pattern
       const match = res.data.match(/"channelId":"(UC[a-zA-Z0-9_-]{22})"/);
       if (match && match[1]) {
         return match[1];
       }
 
+      // Meta itemprop
       const metaMatch = res.data.match(/<meta itemprop="channelId" content="(UC[a-zA-Z0-9_-]{22})">/);
       if (metaMatch && metaMatch[1]) {
         return metaMatch[1];
+      }
+
+      // Direct URL pattern in HTML
+      const urlMatch = res.data.match(/channel\/(UC[a-zA-Z0-9_-]{22})/);
+      if (urlMatch && urlMatch[1]) {
+        return urlMatch[1];
       }
 
       return null;
@@ -56,11 +72,11 @@ export class YoutubeSourceAdapter implements BaseSourceAdapter {
   /**
    * Fetch latest uploads from monitored YouTube channels
    */
-  async fetchLatest(limit: number = 20): Promise<ScrapedItem[]> {
+  async fetchLatest(limit: number = 25): Promise<ScrapedItem[]> {
     const results: ScrapedItem[] = [];
 
     try {
-      // Find all active YouTube channels registered by user
+      // Find all active YouTube channels registered in DB
       const monitoredChannels = await MonitoredChannel.find({
         platform: 'YOUTUBE',
         isActive: true,
@@ -82,7 +98,7 @@ export class YoutubeSourceAdapter implements BaseSourceAdapter {
         const rssUrl = `https://www.youtube.com/feeds/videos.xml?channel_id=${channelId}`;
         try {
           const feed = await this.parser.parseURL(rssUrl);
-          const recentVideos = feed.items.slice(0, 5);
+          const recentVideos = feed.items.slice(0, 8);
 
           for (const vid of recentVideos) {
             if (!vid.link || !vid.title) continue;
@@ -93,7 +109,7 @@ export class YoutubeSourceAdapter implements BaseSourceAdapter {
               try {
                 const transcriptData = await YoutubeTranscript.fetchTranscript(vid.link);
                 if (transcriptData && transcriptData.length > 0) {
-                  transcriptPreview = transcriptData.slice(0, 5).map(t => t.text).join(' ');
+                  transcriptPreview = transcriptData.slice(0, 5).map((t) => t.text).join(' ');
                 }
               } catch {
                 // Captions may be disabled for this video
@@ -103,6 +119,17 @@ export class YoutubeSourceAdapter implements BaseSourceAdapter {
             const snippet = transcriptPreview
               ? `Transcript excerpt: "${transcriptPreview.slice(0, 250)}..."`
               : (vid.contentSnippet || vid.title || '').slice(0, 250);
+
+            // Filter check: verify India sports relevance
+            if (
+              !isIndiaSpecificSports({
+                title: vid.title,
+                contentSnippet: snippet,
+                authorOrChannel: channel.channelName,
+              })
+            ) {
+              continue;
+            }
 
             results.push({
               sourcePlatform: 'YOUTUBE',
@@ -135,6 +162,6 @@ export class YoutubeSourceAdapter implements BaseSourceAdapter {
    */
   async getTranscript(videoUrl: string): Promise<string> {
     const transcript = await YoutubeTranscript.fetchTranscript(videoUrl);
-    return transcript.map(t => t.text).join(' ');
+    return transcript.map((t) => t.text).join(' ');
   }
 }

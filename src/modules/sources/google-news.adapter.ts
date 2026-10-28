@@ -1,5 +1,6 @@
 import Parser from 'rss-parser';
 import { BaseSourceAdapter, ScrapedItem } from './base.adapter';
+import { isIndiaSpecificSports } from '../research/india-sports-filter';
 
 export class GoogleNewsAdapter implements BaseSourceAdapter {
   platformName = 'GOOGLE' as const;
@@ -14,20 +15,21 @@ export class GoogleNewsAdapter implements BaseSourceAdapter {
     });
   }
 
-  async fetchLatest(limit: number = 20): Promise<ScrapedItem[]> {
+  async fetchLatest(limit: number = 25): Promise<ScrapedItem[]> {
     const results: ScrapedItem[] = [];
     const queries = [
-      { q: 'indian+cricket+team', loc: 'hl=en-IN&gl=IN&ceid=IN:en' },
-      { q: 'india+sports+badminton+hockey', loc: 'hl=en-IN&gl=IN&ceid=IN:en' },
-      { q: 'isl+indian+football', loc: 'hl=en-IN&gl=IN&ceid=IN:en' },
-      { q: 'sports+headlines', loc: 'hl=en-US&gl=US&ceid=US:en' },
+      { q: 'indian+cricket+team+OR+BCCI+OR+IPL+OR+WPL', loc: 'hl=en-IN&gl=IN&ceid=IN:en' },
+      { q: 'india+sports+badminton+OR+hockey+OR+athletics+OR+wrestling', loc: 'hl=en-IN&gl=IN&ceid=IN:en' },
+      { q: 'indian+football+OR+ISL+OR+I-League+OR+AIFF', loc: 'hl=en-IN&gl=IN&ceid=IN:en' },
+      { q: 'indian+athletes+chess+OR+shooting+OR+kabaddi+OR+olympics', loc: 'hl=en-IN&gl=IN&ceid=IN:en' },
+      { q: 'india+sports+news+athletes', loc: 'hl=en-IN&gl=IN&ceid=IN:en' },
     ];
 
     for (const itemQuery of queries) {
       const newsUrl = `https://news.google.com/rss/search?q=${itemQuery.q}+when:24h&${itemQuery.loc}`;
       try {
         const feed = await this.parser.parseURL(newsUrl);
-        const topItems = feed.items.slice(0, 6);
+        const topItems = feed.items.slice(0, 10);
 
         for (const item of topItems) {
           if (!item.link || !item.title) continue;
@@ -39,6 +41,17 @@ export class GoogleNewsAdapter implements BaseSourceAdapter {
 
           const rawSnippet = item.contentSnippet || item.content || '';
           const cleanSnippet = rawSnippet.replace(/<[^>]*>?/gm, '').trim().slice(0, 300);
+
+          // Strictly enforce India-specific sports verification
+          if (
+            !isIndiaSpecificSports({
+              title: cleanTitle,
+              contentSnippet: cleanSnippet,
+              authorOrChannel: publisher || 'Google News',
+            })
+          ) {
+            continue;
+          }
 
           results.push({
             sourcePlatform: 'GOOGLE',

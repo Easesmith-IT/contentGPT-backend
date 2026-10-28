@@ -1,18 +1,20 @@
 import Parser from 'rss-parser';
 import { BaseSourceAdapter, ScrapedItem } from './base.adapter';
+import { isIndiaSpecificSports } from '../research/india-sports-filter';
 
 export class RssSourceAdapter implements BaseSourceAdapter {
   platformName = 'RSS_NEWS' as const;
   private parser: Parser;
 
+  // Curated, 100% India-centric sports feeds (Global feeds like BBC, Sky Sports, ESPN Global removed)
   private defaultFeeds = [
-    { name: 'ESPNcricinfo', url: 'https://www.espncricinfo.com/rss/content/story/feeds/0.xml' },
+    { name: 'ESPNcricinfo India', url: 'https://www.espncricinfo.com/rss/content/story/feeds/6.xml' },
     { name: 'Times of India Sports', url: 'https://timesofindia.indiatimes.com/rssfeeds/4719148.cms' },
+    { name: 'Times of India Cricket', url: 'https://timesofindia.indiatimes.com/rssfeeds/54829575.cms' },
     { name: 'The Hindu Sport', url: 'https://www.thehindu.com/sport/feeder/default.rss' },
+    { name: 'Sportstar India', url: 'https://sportstar.thehindu.com/feeder/default.rss' },
+    { name: 'Hindustan Times Cricket', url: 'https://www.hindustantimes.com/feeds/rss/cricket/rssfeed.xml' },
     { name: 'NDTV Sports India', url: 'https://feeds.feedburner.com/ndtvsports-latest' },
-    { name: 'ESPN Global', url: 'https://www.espn.com/espn/rss/news' },
-    { name: 'BBC Sport', url: 'https://feeds.bbci.co.uk/sport/rss.xml' },
-    { name: 'Sky Sports', url: 'https://www.skysports.com/rss/12040' },
   ];
 
   constructor() {
@@ -24,13 +26,13 @@ export class RssSourceAdapter implements BaseSourceAdapter {
     });
   }
 
-  async fetchLatest(limit: number = 20): Promise<ScrapedItem[]> {
+  async fetchLatest(limit: number = 30): Promise<ScrapedItem[]> {
     const results: ScrapedItem[] = [];
 
     for (const feed of this.defaultFeeds) {
       try {
         const parsed = await this.parser.parseURL(feed.url);
-        const items = parsed.items.slice(0, 8);
+        const items = parsed.items.slice(0, 15);
 
         for (const item of items) {
           if (!item.link || !item.title) continue;
@@ -38,6 +40,17 @@ export class RssSourceAdapter implements BaseSourceAdapter {
           // Strip HTML tags for clean snippet
           const rawSnippet = item.contentSnippet || item.content || item.summary || '';
           const cleanSnippet = rawSnippet.replace(/<[^>]*>?/gm, '').trim().slice(0, 300);
+
+          // Strictly filter for India-specific sports news
+          if (
+            !isIndiaSpecificSports({
+              title: item.title,
+              contentSnippet: cleanSnippet,
+              authorOrChannel: feed.name,
+            })
+          ) {
+            continue;
+          }
 
           results.push({
             sourcePlatform: 'RSS_NEWS',

@@ -1,6 +1,7 @@
 import axios from 'axios';
 import { BaseSourceAdapter, ScrapedItem } from './base.adapter';
 import { MonitoredChannel } from '../../models/MonitoredChannel';
+import { isIndiaSpecificSports } from '../research/india-sports-filter';
 
 export class InstagramSourceAdapter implements BaseSourceAdapter {
   platformName = 'INSTAGRAM' as const;
@@ -40,7 +41,18 @@ export class InstagramSourceAdapter implements BaseSourceAdapter {
             const posts = res.data?.data?.items || [];
             for (const item of posts.slice(0, 4)) {
               const reelUrl = item.code ? `https://www.instagram.com/reel/${item.code}/` : ch.channelUrl;
-              const caption = item.caption?.text || 'Instagram sports reel';
+              const caption = item.caption?.text || 'Indian sports reel';
+
+              // Verify India sports relevance
+              if (
+                !isIndiaSpecificSports({
+                  title: `${ch.channelName} - ${caption.slice(0, 60)}`,
+                  contentSnippet: caption,
+                  authorOrChannel: `@${username}`,
+                })
+              ) {
+                continue;
+              }
 
               results.push({
                 sourcePlatform: 'INSTAGRAM',
@@ -63,8 +75,8 @@ export class InstagramSourceAdapter implements BaseSourceAdapter {
             console.warn(`[InstagramSourceAdapter] RapidAPI call failed for @${username}: ${apiErr.message}`);
           }
         } else {
-          // If no RapidAPI key configured, record channel check without throwing error
-          console.log(`[InstagramSourceAdapter] Note: Set RAPIDAPI_KEY in .env for automated Instagram profile scraping. Monitored account: @${username}`);
+          // If no RapidAPI key configured, log channel check
+          console.log(`[InstagramSourceAdapter] Note: Monitored Indian account: @${username}`);
         }
       }
     } catch (err: any) {

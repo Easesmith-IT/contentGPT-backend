@@ -5,6 +5,7 @@ import { GoogleNewsAdapter } from '../sources/google-news.adapter';
 import { RedditSourceAdapter } from '../sources/reddit.adapter';
 import { YoutubeSourceAdapter } from '../sources/youtube.adapter';
 import { InstagramSourceAdapter } from '../sources/instagram.adapter';
+import { isIndiaSpecificSports } from './india-sports-filter';
 
 export interface FeedQueryOptions {
   date?: string; // 'YYYY-MM-DD'
@@ -24,106 +25,177 @@ export class ResearchService {
   private instagramAdapter = new InstagramSourceAdapter();
 
   /**
-   * Seed default priority sports channels if the database has none
+   * Seed and verify default priority Indian sports channels
+   * Automatically cleans up any previous global non-India channels
    */
   async ensureDefaultChannels(): Promise<void> {
-    const count = await MonitoredChannel.countDocuments();
-    if (count === 0) {
-      console.log('[ResearchService] Seeding default priority sports channels...');
-      await MonitoredChannel.create([
-        {
-          platform: 'YOUTUBE',
-          channelName: 'ESPN FC',
-          channelUrl: 'https://www.youtube.com/@espnfc',
-          platformChannelId: 'UC6C1xG0tUpxzXGZrY3wP3mA',
-          priorityWeight: 2.5,
-          category: 'football',
-          autoTranscribe: false,
-          isActive: true,
-        },
-        {
-          platform: 'YOUTUBE',
-          channelName: 'Sky Sports Premier League',
-          channelUrl: 'https://www.youtube.com/@SkySportsPL',
-          platformChannelId: 'UCNAf1k0yIjyGu3k9BwAg3lg',
-          priorityWeight: 2.5,
-          category: 'football',
-          autoTranscribe: false,
-          isActive: true,
-        },
-        {
-          platform: 'YOUTUBE',
-          channelName: 'NBA',
-          channelUrl: 'https://www.youtube.com/@NBA',
-          platformChannelId: 'UCWJ2lWNubArHWmf3FIHbfcQ',
-          priorityWeight: 2.0,
-          category: 'basketball',
-          autoTranscribe: false,
-          isActive: true,
-        },
-        {
-          platform: 'INSTAGRAM',
-          channelName: 'Bleacher Report Football',
-          channelUrl: 'https://www.instagram.com/brfootball/',
-          priorityWeight: 2.0,
-          category: 'football',
-          isActive: true,
-        },
-      ]);
+    // 1. Remove legacy non-India channels
+    const legacyNonIndiaUrls = [
+      'https://www.youtube.com/@espnfc',
+      'https://www.youtube.com/@SkySportsPL',
+      'https://www.youtube.com/@NBA',
+      'https://www.instagram.com/brfootball/',
+    ];
+    await MonitoredChannel.deleteMany({ channelUrl: { $in: legacyNonIndiaUrls } });
+
+    // 2. Ensure official India sports priority channels
+    const defaultIndiaChannels = [
+      {
+        platform: 'YOUTUBE' as const,
+        channelName: 'Star Sports',
+        channelUrl: 'https://www.youtube.com/@starsports',
+        platformChannelId: 'UCmqfX0S3x0I3uwLkPdpX03w',
+        priorityWeight: 2.5,
+        category: 'sports',
+        autoTranscribe: false,
+        isActive: true,
+      },
+      {
+        platform: 'YOUTUBE' as const,
+        channelName: 'Sports Tak',
+        channelUrl: 'https://www.youtube.com/@SportsTak',
+        platformChannelId: 'UCVXCo0W9pk2dDkEBNLhTt7A',
+        priorityWeight: 2.5,
+        category: 'sports',
+        autoTranscribe: false,
+        isActive: true,
+      },
+      {
+        platform: 'YOUTUBE' as const,
+        channelName: 'Indian Super League',
+        channelUrl: 'https://www.youtube.com/@IndianSuperLeague',
+        platformChannelId: 'UCJk-aQ7NZtqYtpcqKDt_vZg',
+        priorityWeight: 2.0,
+        category: 'football',
+        autoTranscribe: false,
+        isActive: true,
+      },
+      {
+        platform: 'YOUTUBE' as const,
+        channelName: 'Cricbuzz',
+        channelUrl: 'https://www.youtube.com/@cricbuzz',
+        platformChannelId: 'UCSRQXk5yErn4e14vN76upOw',
+        priorityWeight: 2.0,
+        category: 'cricket',
+        autoTranscribe: false,
+        isActive: true,
+      },
+      {
+        platform: 'YOUTUBE' as const,
+        channelName: 'Sony Sports Network',
+        channelUrl: 'https://www.youtube.com/@SonySportsNetwork',
+        platformChannelId: 'UC_WKb6N9iTGc77hxwXLDrbA',
+        priorityWeight: 2.0,
+        category: 'sports',
+        autoTranscribe: false,
+        isActive: true,
+      },
+      {
+        platform: 'INSTAGRAM' as const,
+        channelName: 'Indian Cricket Team',
+        channelUrl: 'https://www.instagram.com/indiancricketteam/',
+        priorityWeight: 2.5,
+        category: 'cricket',
+        isActive: true,
+      },
+      {
+        platform: 'INSTAGRAM' as const,
+        channelName: 'Indian Super League',
+        channelUrl: 'https://www.instagram.com/indiansuperleague/',
+        priorityWeight: 2.0,
+        category: 'football',
+        isActive: true,
+      },
+      {
+        platform: 'INSTAGRAM' as const,
+        channelName: 'Team India',
+        channelUrl: 'https://www.instagram.com/teamindia/',
+        priorityWeight: 2.0,
+        category: 'sports',
+        isActive: true,
+      },
+    ];
+
+    for (const ch of defaultIndiaChannels) {
+      const existing = await MonitoredChannel.findOne({ channelUrl: ch.channelUrl });
+      if (!existing) {
+        await MonitoredChannel.create(ch);
+        console.log(`[ResearchService] Registered India sports priority channel: ${ch.channelName}`);
+      }
     }
   }
 
   /**
-   * Run the full scrape pipeline across all adapters
+   * Purge any non-India sports news from database
+   */
+  async cleanGlobalItems(): Promise<{ removedCount: number }> {
+    const allItems = await ResearchItem.find();
+    let removedCount = 0;
+
+    for (const item of allItems) {
+      if (!isIndiaSpecificSports(item)) {
+        await ResearchItem.deleteOne({ _id: item._id });
+        removedCount++;
+      }
+    }
+
+    if (removedCount > 0) {
+      console.log(`[ResearchService] Cleaned up ${removedCount} global non-India sports items from database.`);
+    }
+    return { removedCount };
+  }
+
+  /**
+   * Run the full scrape pipeline across all adapters (100% India-specific)
    */
   async runScrapePipeline(slot: 'MORNING_9AM' | 'EVENING_8PM' | 'MANUAL' = 'MANUAL'): Promise<{
     totalFetched: number;
     newItemsInserted: number;
     errors: string[];
   }> {
-    console.log(`[Scraper Pipeline] Starting scrape cycle for slot: ${slot}...`);
+    console.log(`[Scraper Pipeline] Starting India-specific scrape cycle for slot: ${slot}...`);
     await this.ensureDefaultChannels();
 
     const errors: string[] = [];
     const allScrapedItems = [];
 
-    // 1. YouTube
+    // 1. YouTube (India Sports Channels)
     try {
       const ytItems = await this.youtubeAdapter.fetchLatest(25);
       allScrapedItems.push(...ytItems);
-      console.log(`[Scraper] YouTube: fetched ${ytItems.length} videos`);
+      console.log(`[Scraper] YouTube (India Channels): fetched ${ytItems.length} videos`);
     } catch (e: any) {
       errors.push(`YouTube scraper error: ${e.message}`);
     }
 
-    // 2. Reddit
+    // 2. Reddit (r/indiansports, r/IndianFootball, r/IndiaCricket, r/ipl)
     try {
       const redditItems = await this.redditAdapter.fetchLatest(25);
       allScrapedItems.push(...redditItems);
-      console.log(`[Scraper] Reddit: fetched ${redditItems.length} posts`);
+      console.log(`[Scraper] Reddit (India Subs): fetched ${redditItems.length} posts`);
     } catch (e: any) {
       errors.push(`Reddit scraper error: ${e.message}`);
     }
 
-    // 3. Google News & Trends
+    // 3. Google News (India Edition & India Sports Topics)
     try {
-      const gNewsItems = await this.googleNewsAdapter.fetchLatest(20);
+      const gNewsItems = await this.googleNewsAdapter.fetchLatest(25);
       allScrapedItems.push(...gNewsItems);
-      console.log(`[Scraper] Google News: fetched ${gNewsItems.length} articles`);
+      console.log(`[Scraper] Google News (India): fetched ${gNewsItems.length} articles`);
     } catch (e: any) {
       errors.push(`Google News scraper error: ${e.message}`);
     }
 
-    // 4. Sports News RSS
+    // 4. India Sports RSS Outlets
     try {
-      const rssItems = await this.rssAdapter.fetchLatest(20);
+      const rssItems = await this.rssAdapter.fetchLatest(30);
       allScrapedItems.push(...rssItems);
-      console.log(`[Scraper] Sports RSS: fetched ${rssItems.length} articles`);
+      console.log(`[Scraper] Sports RSS (India): fetched ${rssItems.length} articles`);
     } catch (e: any) {
       errors.push(`Sports RSS scraper error: ${e.message}`);
     }
 
-    // 5. Instagram
+    // 5. Instagram (India Sports Channels)
     try {
       const igItems = await this.instagramAdapter.fetchLatest(10);
       allScrapedItems.push(...igItems);
@@ -131,9 +203,14 @@ export class ResearchService {
       errors.push(`Instagram scraper error: ${e.message}`);
     }
 
-    // Insert or update in database (deduplicating by sourceUrl)
+    // Insert or update in database (deduplicating by sourceUrl and strictly enforcing India sports filter)
     let newItemsCount = 0;
     for (const item of allScrapedItems) {
+      // Final guardrail: ensure item is strictly India-specific
+      if (!isIndiaSpecificSports(item)) {
+        continue;
+      }
+
       try {
         const existing = await ResearchItem.findOne({ sourceUrl: item.sourceUrl });
         if (!existing) {
@@ -154,7 +231,9 @@ export class ResearchService {
       }
     }
 
-    console.log(`[Scraper Pipeline] Completed. Total fetched: ${allScrapedItems.length}, New inserted: ${newItemsCount}`);
+    console.log(
+      `[Scraper Pipeline] Completed. Total fetched: ${allScrapedItems.length}, New India sports inserted: ${newItemsCount}`
+    );
 
     return {
       totalFetched: allScrapedItems.length,
@@ -175,7 +254,9 @@ export class ResearchService {
       createdAt: { $lt: cutoffDate },
     });
 
-    console.log(`[Retention Purge] Purged ${result.deletedCount} unsaved feed items older than ${days} days (${cutoffDate.toISOString()}).`);
+    console.log(
+      `[Retention Purge] Purged ${result.deletedCount} unsaved feed items older than ${days} days (${cutoffDate.toISOString()}).`
+    );
 
     return {
       deletedCount: result.deletedCount || 0,
