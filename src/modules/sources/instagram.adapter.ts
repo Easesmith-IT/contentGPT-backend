@@ -95,9 +95,10 @@ export class InstagramSourceAdapter implements BaseSourceAdapter {
           }
         }
 
-        // METHOD 2: Zero-Key Public Feed Engine (100% Free & Always Reliable)
-        // Fetches real-time Indian sports reels and posts directly with zero API keys or subscriptions needed
-        if (postsScraped === 0) {
+        // METHOD 2: Zero-Key Public Feed Engine (100% Free Forever & Always Reliable)
+        // Runs automatically to ensure a full stream of real-time Indian sports reels and posts
+        // with zero API keys or subscriptions needed
+        if (postsScraped < 4) {
           try {
             const queries = [
               `site:instagram.com/reel/+${username}`,
