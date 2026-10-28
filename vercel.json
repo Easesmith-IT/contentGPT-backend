@@ -1,0 +1,29 @@
+{
+  "version": 2,
+  "builds": [
+    {
+      "src": "src/server.ts",
+      "use": "@vercel/node"
+    }
+  ],
+  "routes": [
+    {
+      "src": "/(.*)",
+      "dest": "src/server.ts"
+    }
+  ],
+  "crons": [
+    {
+      "path": "/api/v1/research/cron/morning",
+      "schedule": "0 9 * * *"
+    },
+    {
+      "path": "/api/v1/research/cron/evening",
+      "schedule": "0 20 * * *"
+    },
+    {
+      "path": "/api/v1/research/cron/purge",
+      "schedule": "0 0 * * *"
+    }
+  ]
+}
