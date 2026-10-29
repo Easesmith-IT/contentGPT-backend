@@ -1,4 +1,5 @@
 import fs from 'fs';
+const { GoogleGenAI } = require('@google/genai');
 
 export interface EnrichedTranscriptData {
   cleanText: {
@@ -25,17 +26,16 @@ export interface GeneratedScriptResult {
 const DEFAULT_GEMINI_MODEL = process.env.GEMINI_MODEL || 'gemini-3.5-flash-lite';
 
 export class GeminiAudioService {
-  private async getClient(): Promise<any | null> {
-    const apiKey = process.env.GEMINI_API_KEY;
-    if (!apiKey || apiKey.trim() === '') {
+  private getClient(): any | null {
+    const apiKey = (process.env.GEMINI_API_KEY || '').trim();
+    if (!apiKey) {
+      console.warn('[GeminiAudioService] GEMINI_API_KEY is not defined in process.env');
       return null;
     }
     try {
-      // Dynamic import for ESM package compatibility in CommonJS
-      const genai = await (eval('import("@google/genai")') as Promise<any>);
-      return new genai.GoogleGenAI({ apiKey: apiKey.trim() });
+      return new GoogleGenAI({ apiKey });
     } catch (err: any) {
-      console.warn(`[GeminiAudioService] Could not load @google/genai: ${err.message}`);
+      console.warn(`[GeminiAudioService] Could not initialize GoogleGenAI: ${err.message}`);
       return null;
     }
   }
@@ -510,7 +510,7 @@ ${JSON.stringify(input)}`;
       // 1. Upload audio/video file using Gemini File API (file path as string)
       const fileUpload = await ai.files.upload({
         file: filePath,
-        mimeType,
+        config: { mimeType },
       });
 
       console.log(`[GeminiAudioService] File uploaded: ${fileUpload.name}. Requesting transcription...`);
