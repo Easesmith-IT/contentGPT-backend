@@ -40,6 +40,31 @@ export class GeminiAudioService {
     }
   }
 
+  private async generateWithRetry(ai: any, params: any, maxRetries = 2): Promise<any> {
+    const models = [DEFAULT_GEMINI_MODEL, 'gemini-3.8-flash', 'gemini-1.5-flash'];
+    let lastError: any = null;
+
+    for (const model of models) {
+      for (let attempt = 1; attempt <= maxRetries; attempt++) {
+        try {
+          return await ai.models.generateContent({
+            ...params,
+            model,
+          });
+        } catch (err: any) {
+          lastError = err;
+          const status = err?.status || (err?.message && err.message.includes('503') ? 503 : 0);
+          if (status === 503 && attempt < maxRetries) {
+            await new Promise((r) => setTimeout(r, 1500 * attempt));
+            continue;
+          }
+          break; // Try next model in list
+        }
+      }
+    }
+    throw lastError;
+  }
+
   /**
    * Structure raw transcript into English, Hinglish, Hindi + Summaries + Quotes
    */
@@ -60,40 +85,192 @@ RAW TRANSCRIPT:
 
 Perform the following tasks and return strictly valid JSON matching this schema:
 {
-  "english": "A clean, punctuated, professional English reading version with all filler words removed",
-  "hinglish": "A natural, high-energy Hinglish version (Hindi words in English/Latin script, commonly spoken in Indian cricket/football YouTube channels like Sports Tak or Cricbuzz)",
-  "hindi": "Natural Devanagari Hindi translation/transcription if applicable, or high-quality Devanagari Hindi version",
+  "english": "A clean, punctuated, professional English translation and reading version with all filler words removed",
+  "hinglish": "A natural, high-energy Hinglish version (Hindi words written in English/Roman script, commonly spoken in Indian cricket/football YouTube channels like Sports Tak, Tanmay Bhat, or Cricbuzz. NOT in Devanagari Hindi script)",
+  "hindi": "Natural Devanagari Hindi transcription",
   "summary": ["Point 1 (Key match event or statement)", "Point 2 (Analysis or tactical detail)", "Point 3 (Implication or consequence)", "Point 4 (Fan or team reaction)"],
   "keyQuotes": ["Exact or near-exact quote with speaker name if known", "Second notable quote"],
   "suggestedAngles": ["Contrarian debate angle for a YouTube Short", "Stat or comparison angle", "Tactical breakdown angle"]
 }
 
 Strict requirements:
+- If the original text is in Hindi/Devanagari, "english" MUST be translated into English, and "hinglish" MUST be written in Roman/English alphabet (e.g. 'Dono bhaiyon ko utar diya...'). Do NOT output Devanagari in hinglish or english.
 - Keep Indian player names, tournaments (IPL, WPL, ISL, Ranji), and cricket/football terms accurate.
-- Return ONLY the JSON object, no markdown code fence ticks.`;
+- Return ONLY the JSON object.`;
 
-      const response = await ai.models.generateContent({
-        model: DEFAULT_GEMINI_MODEL,
+      const response = await this.generateWithRetry(ai, {
         contents: prompt,
+        config: {
+          responseMimeType: 'application/json',
+        },
       });
 
       const text = response.text || '';
-      const cleanJsonStr = text.replace(/```json/gi, '').replace(/```/g, '').trim();
+      let cleanJsonStr = text.replace(/```json/gi, '').replace(/```/g, '').trim();
+      const startIdx = cleanJsonStr.indexOf('{');
+      const endIdx = cleanJsonStr.lastIndexOf('}');
+      if (startIdx !== -1 && endIdx !== -1) {
+        cleanJsonStr = cleanJsonStr.substring(startIdx, endIdx + 1);
+      }
       const parsed = JSON.parse(cleanJsonStr);
+
+      let english = parsed.english || '';
+      let hinglish = parsed.hinglish || '';
+
+      const hasDevanagari = /[\u0900-\u097F]/.test(rawText);
+      const hinglishHasDevanagari = /[\u0900-\u097F]/.test(hinglish);
+
+      // If english or hinglish failed or came back identical to Hindi rawText, or hinglish contains Devanagari, run dedicated translation
+      if (!english || english === rawText || !hinglish || hinglish === rawText || (hasDevanagari && hinglishHasDevanagari)) {
+        const trans = await this.translateTranscript(rawText);
+        english = english && english !== rawText ? english : trans.english;
+        hinglish = hinglish && !hinglishHasDevanagari ? hinglish : trans.hinglish;
+      }
 
       return {
         cleanText: {
           original: rawText,
-          english: parsed.english || rawText,
-          hinglish: parsed.hinglish || rawText,
+          english: english || rawText,
+          hinglish: hinglish || rawText,
         },
         summary: Array.isArray(parsed.summary) && parsed.summary.length > 0 ? parsed.summary : [rawText.slice(0, 200)],
         keyQuotes: Array.isArray(parsed.keyQuotes) ? parsed.keyQuotes : [],
         suggestedAngles: Array.isArray(parsed.suggestedAngles) ? parsed.suggestedAngles : [],
       };
     } catch (err: any) {
-      console.warn(`[GeminiAudioService] AI enrichment failed (${err.message}). Using fallback enrichment.`);
-      return this.buildHeuristicEnrichment(rawText, videoTitle);
+      console.warn(`[GeminiAudioService] AI enrichment failed (${err.message}). Trying dedicated translation.`);
+      const trans = await this.translateTranscript(rawText);
+      const fallback = this.buildHeuristicEnrichment(rawText, videoTitle);
+      fallback.cleanText.english = trans.english;
+      fallback.cleanText.hinglish = trans.hinglish;
+      return fallback;
+    }
+  }
+
+  /**
+   * Dedicated translation method using Gemini 3.5 Flash
+   */
+  async translateTranscript(rawText: string): Promise<{ english: string; hinglish: string }> {
+    const ai = await this.getClient();
+    if (!ai || !rawText || !rawText.trim()) {
+      return { english: rawText, hinglish: rawText };
+    }
+
+    try {
+      const prompt = `Translate and transliterate this sports video transcript:
+"""${rawText.slice(0, 10000)}"""
+
+Return strictly valid JSON:
+{
+  "english": "A clean, natural, professional English translation.",
+  "hinglish": "A natural, high-energy Hinglish version written in Roman/English alphabet (Hindi words written in English letters, popular on Indian sports channels like Sports Tak or Cricbuzz). Must NOT be in Devanagari script."
+}`;
+
+      const res = await this.generateWithRetry(ai, {
+        contents: prompt,
+        config: {
+          responseMimeType: 'application/json',
+        },
+      });
+
+      const parsed = JSON.parse(res.text.trim());
+      return {
+        english: parsed.english || rawText,
+        hinglish: parsed.hinglish || rawText,
+      };
+    } catch (e: any) {
+      console.warn(`[GeminiAudioService] Translation failed: ${e.message}`);
+      return { english: rawText, hinglish: rawText };
+    }
+  }
+
+  /**
+   * Translate an array of segments into English and Hinglish (Roman script)
+   */
+  async translateSegments(segments: Array<{
+    start: number;
+    end: number;
+    timestamp: string;
+    speaker?: string;
+    textOriginal: string;
+    textEnglish?: string;
+    textHinglish?: string;
+  }>): Promise<Array<{
+    start: number;
+    end: number;
+    timestamp: string;
+    speaker: string;
+    textOriginal: string;
+    textEnglish: string;
+    textHinglish: string;
+  }>> {
+    const ai = await this.getClient();
+    if (!ai || !segments || segments.length === 0) {
+      return (segments || []).map((s) => ({
+        start: s.start,
+        end: s.end,
+        timestamp: s.timestamp,
+        speaker: s.speaker || 'Speaker',
+        textOriginal: s.textOriginal,
+        textEnglish: s.textEnglish || s.textOriginal,
+        textHinglish: s.textHinglish || s.textOriginal,
+      }));
+    }
+
+    try {
+      // Chunk into at most 50 segments per batch
+      const input = segments.slice(0, 50).map((s, idx) => ({ id: idx, text: s.textOriginal }));
+
+      const prompt = `Translate the following audio transcript segments into both English and Hinglish (natural Roman/English alphabet script Hindi, strictly NO Devanagari script).
+Return a strict JSON array where each item matches:
+{ "id": number, "english": "string", "hinglish": "string" }
+
+Segments:
+${JSON.stringify(input)}`;
+
+      const res = await this.generateWithRetry(ai, {
+        contents: prompt,
+        config: {
+          responseMimeType: 'application/json',
+        },
+      });
+
+      const parsed = JSON.parse(res.text.trim());
+      const map = new Map<number, { english: string; hinglish: string }>();
+      if (Array.isArray(parsed)) {
+        for (const item of parsed) {
+          if (typeof item.id === 'number') {
+            map.set(item.id, {
+              english: item.english || '',
+              hinglish: item.hinglish || '',
+            });
+          }
+        }
+      }
+
+      return segments.map((s, idx) => {
+        const trans = map.get(idx);
+        return {
+          start: s.start,
+          end: s.end,
+          timestamp: s.timestamp,
+          speaker: s.speaker || 'Speaker',
+          textOriginal: s.textOriginal,
+          textEnglish: trans?.english || s.textEnglish || s.textOriginal,
+          textHinglish: trans?.hinglish || s.textHinglish || s.textOriginal,
+        };
+      });
+    } catch (err: any) {
+      console.warn(`[GeminiAudioService] Segment translation failed: ${err.message}`);
+      return segments.map((s) => ({
+        start: s.start,
+        end: s.end,
+        timestamp: s.timestamp,
+        speaker: s.speaker || 'Speaker',
+        textOriginal: s.textOriginal,
+        textEnglish: s.textEnglish || s.textOriginal,
+        textHinglish: s.textHinglish || s.textOriginal,
+      }));
     }
   }
 
@@ -223,9 +400,11 @@ Return strictly valid JSON:
 }
 Return ONLY valid JSON.`;
 
-      const response = await ai.models.generateContent({
-        model: DEFAULT_GEMINI_MODEL,
+      const response = await this.generateWithRetry(ai, {
         contents: prompt,
+        config: {
+          responseMimeType: 'application/json',
+        },
       });
 
       const parsed = JSON.parse((response.text || '').replace(/```json/gi, '').replace(/```/g, '').trim());
@@ -261,9 +440,11 @@ Return strictly valid JSON:
 }
 Return ONLY valid JSON.`;
 
-      const response = await ai.models.generateContent({
-        model: DEFAULT_GEMINI_MODEL,
+      const response = await this.generateWithRetry(ai, {
         contents: prompt,
+        config: {
+          responseMimeType: 'application/json',
+        },
       });
 
       const parsed = JSON.parse((response.text || '').replace(/```json/gi, '').replace(/```/g, '').trim());

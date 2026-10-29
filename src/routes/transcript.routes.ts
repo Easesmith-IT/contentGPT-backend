@@ -101,8 +101,13 @@ export function createTranscriptRouter(): Router {
         try {
           const supaResult = await igService.transcribeWithSupadata(cleanUrl, igShortcode);
           if (supaResult && supaResult.rawText.trim()) {
-            // AI enrichment with Gemini (Hinglish, English, summary, quotes, angles)
-            const enriched = await geminiService.enrichTranscript(supaResult.rawText, supaResult.title);
+            // AI enrichment with Gemini (Hinglish, English, summary, quotes, angles + segment translation)
+            const [enriched, translatedSegments] = await Promise.all([
+              geminiService.enrichTranscript(supaResult.rawText, supaResult.title),
+              supaResult.segments && supaResult.segments.length > 0
+                ? geminiService.translateSegments(supaResult.segments)
+                : Promise.resolve(supaResult.segments),
+            ]);
 
             const transcriptDoc = await Transcript.create({
               sourcePlatform: 'INSTAGRAM',
@@ -112,7 +117,7 @@ export function createTranscriptRouter(): Router {
               creatorName: supaResult.creatorName,
               thumbnailUrl: supaResult.thumbnailUrl,
               durationSeconds: supaResult.durationSeconds,
-              segments: supaResult.segments,
+              segments: translatedSegments,
               cleanText: enriched.cleanText,
               summary: enriched.summary,
               keyQuotes: enriched.keyQuotes,
@@ -281,6 +286,44 @@ export function createTranscriptRouter(): Router {
         success: true,
         data: scriptResult,
         message: `Drafted ${format === 'SHORT' ? '30-60s Short' : '3-5 min Breakdown'} script successfully!`,
+      });
+    } catch (err: any) {
+      res.status(500).json({ success: false, error: err.message });
+    }
+  });
+
+  // POST /api/v1/transcripts/:id/translate - Translate transcript into English & Hinglish
+  router.post('/:id/translate', async (req: Request, res: Response) => {
+    try {
+      const id = req.params.id as string;
+      const transcript = await Transcript.findById(id);
+      if (!transcript) {
+        return res.status(404).json({ success: false, error: 'Transcript not found.' });
+      }
+
+      const raw =
+        transcript.cleanText.original ||
+        transcript.segments.map((s) => s.textOriginal).join(' ');
+
+      const [translations, translatedSegments] = await Promise.all([
+        geminiService.translateTranscript(raw),
+        transcript.segments && transcript.segments.length > 0
+          ? geminiService.translateSegments(transcript.segments as any)
+          : Promise.resolve([]),
+      ]);
+
+      transcript.cleanText.english = translations.english;
+      transcript.cleanText.hinglish = translations.hinglish;
+      if (translatedSegments && translatedSegments.length > 0) {
+        transcript.segments = translatedSegments as any;
+      }
+
+      await transcript.save();
+
+      res.json({
+        success: true,
+        data: transcript,
+        message: 'Successfully translated transcript into English and Hinglish with Gemini!',
       });
     } catch (err: any) {
       res.status(500).json({ success: false, error: err.message });
