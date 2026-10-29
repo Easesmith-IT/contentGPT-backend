@@ -566,6 +566,158 @@ Do not omit words. Return ONLY the JSON array.`;
   }
 
   /**
+   * Directly transcribe YouTube video via Gemini Multimodal processing
+   * Bypasses datacenter IP blocks, requires zero file uploads, and uses NO Supadata
+   */
+  async transcribeYouTubeWithGemini(
+    videoUrl: string,
+    videoTitle?: string
+  ): Promise<{
+    rawText: string;
+    durationSeconds: number;
+    segments: Array<{
+      start: number;
+      end: number;
+      timestamp: string;
+      speaker: string;
+      textOriginal: string;
+      textEnglish: string;
+      textHinglish: string;
+    }>;
+    cleanText: {
+      original: string;
+      english: string;
+      hinglish: string;
+    };
+    summary: string[];
+    keyQuotes: string[];
+    suggestedAngles: string[];
+  }> {
+    const ai = await this.getClient();
+    if (!ai) {
+      throw new Error('Google Gemini API Key is not configured. Please set GEMINI_API_KEY.');
+    }
+
+    const prompt = `You are an elite Indian sports analyst and transcription engine for "NISHIGPT".
+Listen to and transcribe this YouTube video completely and accurately with timestamps.
+VIDEO TITLE: ${videoTitle || 'Sports Video'}
+
+Strict Requirements:
+1. "segments": Array of timestamped speech segments covering the entire video.
+   - "start": start time in seconds (float)
+   - "end": end time in seconds (float)
+   - "timestamp": "MM:SS" (e.g. "00:00", "00:15")
+   - "speaker": Speaker label (e.g. "Kapil Dev", "Interviewer", or "Speaker")
+   - "textOriginal": Exact spoken words in original spoken language (Hindi/English)
+   - "textEnglish": High-retention English translation with filler words removed
+   - "textHinglish": Natural Roman-alphabet Hinglish (Hindi written in English alphabet, popular on Indian sports channels like Sports Tak or Cricbuzz). Strictly NO Devanagari script.
+2. "cleanText":
+   - "original": Full raw text in original spoken language
+   - "english": Full English translation
+   - "hinglish": Full Roman Hinglish (Strictly NO Devanagari script)
+3. "summary": 3-5 key match or debate takeaways
+4. "keyQuotes": 2-4 notable quotes
+5. "suggestedAngles": 3 contrarian debate angles
+
+Return strictly valid JSON:
+{
+  "segments": [
+    {
+      "start": 0.0,
+      "end": 4.5,
+      "timestamp": "00:00",
+      "speaker": "Speaker",
+      "textOriginal": "...",
+      "textEnglish": "...",
+      "textHinglish": "..."
+    }
+  ],
+  "cleanText": {
+    "original": "...",
+    "english": "...",
+    "hinglish": "..."
+  },
+  "summary": ["..."],
+  "keyQuotes": ["..."],
+  "suggestedAngles": ["..."]
+}`;
+
+    const response = await this.generateWithRetry(ai, {
+      contents: [
+        {
+          fileData: {
+            fileUri: videoUrl,
+            mimeType: 'video/mp4',
+          },
+        },
+        prompt,
+      ],
+      config: {
+        responseMimeType: 'application/json',
+      },
+    });
+
+    const responseText = (response.text || '').replace(/```json/gi, '').replace(/```/g, '').trim();
+    const parsed = JSON.parse(responseText);
+
+    let maxEnd = 0;
+    const segments = Array.isArray(parsed.segments)
+      ? parsed.segments.map((s: any) => {
+          const start = Number(s.start) || 0;
+          const end = Number(s.end) || start + 5;
+          if (end > maxEnd) maxEnd = end;
+          let hing = (s.textHinglish || '').trim();
+          let eng = (s.textEnglish || '').trim();
+          if (/[\u0900-\u097F]/.test(hing)) hing = '';
+          if (/[\u0900-\u097F]/.test(eng)) eng = '';
+
+          return {
+            start,
+            end,
+            timestamp: s.timestamp || '00:00',
+            speaker: s.speaker || 'Speaker',
+            textOriginal: s.textOriginal || '',
+            textEnglish: eng || s.textOriginal || '',
+            textHinglish: hing || s.textOriginal || '',
+          };
+        })
+      : [];
+
+    const raw = (parsed.cleanText?.original || segments.map((s: any) => s.textOriginal).join(' ')).trim();
+    let engClean = (parsed.cleanText?.english || '').trim();
+    let hingClean = (parsed.cleanText?.hinglish || '').trim();
+
+    if (/[\u0900-\u097F]/.test(hingClean) || !hingClean) {
+      if (/[\u0900-\u097F]/.test(raw)) {
+        hingClean = await this.transliterateToHinglish(raw);
+      } else {
+        hingClean = raw;
+      }
+    }
+    if (/[\u0900-\u097F]/.test(engClean) || !engClean) {
+      if (/[\u0900-\u097F]/.test(raw)) {
+        engClean = await this.translateToEnglish(raw);
+      } else {
+        engClean = raw;
+      }
+    }
+
+    return {
+      rawText: raw,
+      durationSeconds: Math.ceil(maxEnd),
+      segments,
+      cleanText: {
+        original: raw,
+        english: engClean || raw,
+        hinglish: hingClean || raw,
+      },
+      summary: Array.isArray(parsed.summary) && parsed.summary.length > 0 ? parsed.summary : [raw.slice(0, 200)],
+      keyQuotes: Array.isArray(parsed.keyQuotes) ? parsed.keyQuotes : [],
+      suggestedAngles: Array.isArray(parsed.suggestedAngles) ? parsed.suggestedAngles : [],
+    };
+  }
+
+  /**
    * Generate a 30-60s Short or 3-5m YouTube Script based on transcript
    */
   async generateScriptDraft(options: {

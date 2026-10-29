@@ -95,12 +95,46 @@ export function createTranscriptRouter(): Router {
             message: 'Successfully transcribed YouTube video!',
           });
         } catch (ytErr: any) {
-          return res.status(422).json({
-            success: false,
-            error: ytErr.message || 'Could not extract subtitles for this YouTube video.',
-            requiresUploadFallback: true,
-            metadata: meta,
-          });
+          console.warn(`[YouTube] Direct caption fetch failed (${ytErr.message}). Automatically falling back to Gemini Multimodal Audio Transcription...`);
+
+          try {
+            // STEP 2: Fallback to Gemini Multimodal Direct Transcription (Zero Supadata, Zero File Upload)
+            const geminiResult = await geminiService.transcribeYouTubeWithGemini(
+              `https://www.youtube.com/watch?v=${ytVideoId}`,
+              meta.title
+            );
+
+            const transcriptDoc = await Transcript.create({
+              sourcePlatform: 'YOUTUBE',
+              sourceUrl: `https://www.youtube.com/watch?v=${ytVideoId}`,
+              videoId: ytVideoId,
+              title: meta.title,
+              creatorName: meta.creatorName,
+              thumbnailUrl: meta.thumbnailUrl,
+              durationSeconds: geminiResult.durationSeconds,
+              segments: geminiResult.segments,
+              cleanText: geminiResult.cleanText,
+              summary: geminiResult.summary,
+              keyQuotes: geminiResult.keyQuotes,
+              suggestedAngles: geminiResult.suggestedAngles,
+              isSaved: false,
+            });
+
+            return res.json({
+              success: true,
+              data: transcriptDoc,
+              cached: false,
+              message: 'Successfully transcribed YouTube video with Gemini!',
+            });
+          } catch (geminiErr: any) {
+            console.error(`[YouTube] Gemini Multimodal fallback failed: ${geminiErr.message}`);
+            return res.status(422).json({
+              success: false,
+              error: geminiErr.message || ytErr.message || 'Could not extract transcript for this YouTube video.',
+              requiresUploadFallback: true,
+              metadata: meta,
+            });
+          }
         }
       }
 
