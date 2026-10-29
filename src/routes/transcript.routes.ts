@@ -29,7 +29,7 @@ export function createTranscriptRouter(): Router {
 
       const cleanUrl = url.trim();
 
-      // 1. Check if URL is YouTube
+      // 1. Check if URL is YouTube (100% free direct subtitle extraction; Supadata is NOT used here)
       const ytVideoId = ytService.extractVideoId(cleanUrl);
       if (ytVideoId) {
         // Check if transcript already exists in DB for this video
@@ -84,7 +84,7 @@ export function createTranscriptRouter(): Router {
         }
       }
 
-      // 2. Check if URL is Instagram
+      // 2. Check if URL is Instagram (Supadata is used EXCLUSIVELY for Instagram Reels to conserve API credits)
       const igShortcode = igService.extractShortcode(cleanUrl);
       if (igShortcode) {
         const existing = await Transcript.findOne({ videoId: igShortcode });
