@@ -6,6 +6,7 @@ import { ResearchService } from './modules/research/research.service';
 import { ChannelService } from './modules/channels/channel.service';
 import { createResearchRouter } from './routes/research.routes';
 import { createChannelRouter } from './routes/channel.routes';
+import { createTranscriptRouter } from './routes/transcript.routes';
 import { setupScheduledJobs } from './jobs/scheduler';
 
 dotenv.config();
@@ -64,6 +65,7 @@ const channelService = new ChannelService();
 // Register Routes
 app.use('/api/v1/research', createResearchRouter(researchService));
 app.use('/api/v1/channels', createChannelRouter(channelService));
+app.use('/api/v1/transcripts', createTranscriptRouter());
 
 // Setup Cron Schedulers
 setupScheduledJobs(researchService);
