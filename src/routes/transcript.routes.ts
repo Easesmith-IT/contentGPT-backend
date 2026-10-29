@@ -307,10 +307,16 @@ export function createTranscriptRouter(): Router {
 
       const result = await geminiService.translateTranscriptAndSegments(raw, transcript.segments as any);
 
-      transcript.cleanText.english = result.english;
-      transcript.cleanText.hinglish = result.hinglish;
+      transcript.cleanText = {
+        original: transcript.cleanText.original || raw,
+        english: result.english,
+        hinglish: result.hinglish,
+      };
+      transcript.markModified('cleanText');
+
       if (result.segments && result.segments.length > 0) {
         transcript.segments = result.segments as any;
+        transcript.markModified('segments');
       }
 
       await transcript.save();
