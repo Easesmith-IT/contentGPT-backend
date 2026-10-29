@@ -22,6 +22,8 @@ export interface GeneratedScriptResult {
   chapterMarkers?: { timestamp: string; title: string }[];
 }
 
+const DEFAULT_GEMINI_MODEL = process.env.GEMINI_MODEL || 'gemini-3.5-flash';
+
 export class GeminiAudioService {
   private async getClient(): Promise<any | null> {
     const apiKey = process.env.GEMINI_API_KEY;
@@ -71,7 +73,7 @@ Strict requirements:
 - Return ONLY the JSON object, no markdown code fence ticks.`;
 
       const response = await ai.models.generateContent({
-        model: 'gemini-1.5-flash',
+        model: DEFAULT_GEMINI_MODEL,
         contents: prompt,
       });
 
@@ -132,7 +134,7 @@ If there are multiple speakers (e.g. interviewer and player), differentiate them
 Do not omit words. Return ONLY the JSON array.`;
 
       const response = await ai.models.generateContent({
-        model: 'gemini-1.5-flash',
+        model: DEFAULT_GEMINI_MODEL,
         contents: [fileUpload, prompt],
       });
 
@@ -222,7 +224,7 @@ Return strictly valid JSON:
 Return ONLY valid JSON.`;
 
       const response = await ai.models.generateContent({
-        model: 'gemini-1.5-flash',
+        model: DEFAULT_GEMINI_MODEL,
         contents: prompt,
       });
 
@@ -260,7 +262,7 @@ Return strictly valid JSON:
 Return ONLY valid JSON.`;
 
       const response = await ai.models.generateContent({
-        model: 'gemini-1.5-flash',
+        model: DEFAULT_GEMINI_MODEL,
         contents: prompt,
       });
 
