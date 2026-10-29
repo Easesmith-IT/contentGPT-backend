@@ -22,7 +22,7 @@ export interface GeneratedScriptResult {
   chapterMarkers?: { timestamp: string; title: string }[];
 }
 
-const DEFAULT_GEMINI_MODEL = process.env.GEMINI_MODEL || 'gemini-3.5-flash';
+const DEFAULT_GEMINI_MODEL = process.env.GEMINI_MODEL || 'gemini-3.5-flash-lite';
 
 export class GeminiAudioService {
   private async getClient(): Promise<any | null> {
@@ -41,7 +41,7 @@ export class GeminiAudioService {
   }
 
   private async generateWithRetry(ai: any, params: any, maxRetries = 2): Promise<any> {
-    const models = [DEFAULT_GEMINI_MODEL, 'gemini-3.8-flash', 'gemini-1.5-flash'];
+    const models = [DEFAULT_GEMINI_MODEL, 'gemini-3.5-flash-lite', 'gemini-flash-latest'];
     let lastError: any = null;
 
     for (const model of models) {
@@ -55,7 +55,7 @@ export class GeminiAudioService {
           lastError = err;
           const status = err?.status || (err?.message && err.message.includes('503') ? 503 : 0);
           if (status === 503 && attempt < maxRetries) {
-            await new Promise((r) => setTimeout(r, 1500 * attempt));
+            await new Promise((r) => setTimeout(r, 1200 * attempt));
             continue;
           }
           break; // Try next model in list
@@ -181,6 +181,119 @@ Return strictly valid JSON:
     } catch (e: any) {
       console.warn(`[GeminiAudioService] Translation failed: ${e.message}`);
       return { english: rawText, hinglish: rawText };
+    }
+  }
+
+  /**
+   * Unified translation for both full transcript and segments in a single prompt
+   */
+  async translateTranscriptAndSegments(
+    rawText: string,
+    segments?: Array<{
+      start: number;
+      end: number;
+      timestamp: string;
+      speaker?: string;
+      textOriginal: string;
+      textEnglish?: string;
+      textHinglish?: string;
+    }>
+  ): Promise<{
+    english: string;
+    hinglish: string;
+    segments: Array<{
+      start: number;
+      end: number;
+      timestamp: string;
+      speaker: string;
+      textOriginal: string;
+      textEnglish: string;
+      textHinglish: string;
+    }>;
+  }> {
+    const ai = await this.getClient();
+    const defaultSegments = (segments || []).map((s) => ({
+      start: s.start,
+      end: s.end,
+      timestamp: s.timestamp,
+      speaker: s.speaker || 'Speaker',
+      textOriginal: s.textOriginal,
+      textEnglish: s.textEnglish || s.textOriginal,
+      textHinglish: s.textHinglish || s.textOriginal,
+    }));
+
+    if (!ai || !rawText || !rawText.trim()) {
+      return {
+        english: rawText,
+        hinglish: rawText,
+        segments: defaultSegments,
+      };
+    }
+
+    try {
+      const segInput = (segments || []).slice(0, 45).map((s, idx) => ({ id: idx, text: s.textOriginal }));
+
+      const prompt = `You are an elite Indian sports analyst and translator for "NISHIGPT".
+Translate and transliterate this sports video transcript:
+FULL TRANSCRIPT:
+"""${rawText.slice(0, 8000)}"""
+
+${segInput.length > 0 ? `SEGMENTS TO TRANSLATE:\n${JSON.stringify(segInput)}\n` : ''}
+
+Strict Requirements:
+1. "english": Professional, high-retention English translation with all filler words removed.
+2. "hinglish": Natural, high-energy Hinglish version written in Roman/English alphabet (Hindi words written in English letters, popular on Indian sports channels like Sports Tak or Cricbuzz). Must NOT be in Devanagari script.
+3. "segments": If segments were provided above, an array where each item matches { "id": number, "english": string, "hinglish": string (in Roman script) }.
+
+Return strictly valid JSON:
+{
+  "english": "...",
+  "hinglish": "...",
+  "segments": [ ... ]
+}`;
+
+      const res = await this.generateWithRetry(ai, {
+        contents: prompt,
+        config: {
+          responseMimeType: 'application/json',
+        },
+      });
+
+      const parsed = JSON.parse(res.text.trim());
+      const segMap = new Map<number, { english: string; hinglish: string }>();
+      if (Array.isArray(parsed.segments)) {
+        for (const item of parsed.segments) {
+          if (typeof item.id === 'number') {
+            segMap.set(item.id, { english: item.english || '', hinglish: item.hinglish || '' });
+          }
+        }
+      }
+
+      const translatedSegments = (segments || []).map((s, idx) => {
+        const t = segMap.get(idx);
+        return {
+          start: s.start,
+          end: s.end,
+          timestamp: s.timestamp,
+          speaker: s.speaker || 'Speaker',
+          textOriginal: s.textOriginal,
+          textEnglish: t?.english || s.textEnglish || s.textOriginal,
+          textHinglish: t?.hinglish || s.textHinglish || s.textOriginal,
+        };
+      });
+
+      return {
+        english: parsed.english || rawText,
+        hinglish: parsed.hinglish || rawText,
+        segments: translatedSegments,
+      };
+    } catch (err: any) {
+      console.warn(`[GeminiAudioService] Unified translation failed: ${err.message}`);
+      return {
+        english: rawText,
+        hinglish: rawText,
+        segments: defaultSegments,
+      };
     }
   }
 

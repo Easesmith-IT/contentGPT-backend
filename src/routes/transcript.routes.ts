@@ -305,17 +305,12 @@ export function createTranscriptRouter(): Router {
         transcript.cleanText.original ||
         transcript.segments.map((s) => s.textOriginal).join(' ');
 
-      const [translations, translatedSegments] = await Promise.all([
-        geminiService.translateTranscript(raw),
-        transcript.segments && transcript.segments.length > 0
-          ? geminiService.translateSegments(transcript.segments as any)
-          : Promise.resolve([]),
-      ]);
+      const result = await geminiService.translateTranscriptAndSegments(raw, transcript.segments as any);
 
-      transcript.cleanText.english = translations.english;
-      transcript.cleanText.hinglish = translations.hinglish;
-      if (translatedSegments && translatedSegments.length > 0) {
-        transcript.segments = translatedSegments as any;
+      transcript.cleanText.english = result.english;
+      transcript.cleanText.hinglish = result.hinglish;
+      if (result.segments && result.segments.length > 0) {
+        transcript.segments = result.segments as any;
       }
 
       await transcript.save();
