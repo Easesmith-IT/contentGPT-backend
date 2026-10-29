@@ -63,8 +63,14 @@ export function createTranscriptRouter(): Router {
           // Direct caption extraction
           const captionResult = await ytService.extractCaptions(ytVideoId);
 
-          // AI enrichment (Summary, Quotes, Hinglish, English)
-          const enriched = await geminiService.enrichTranscript(captionResult.rawText, meta.title);
+          // AI enrichment (Summary, Quotes, Hinglish, English + Segments Translation)
+          const hasDev = /[\u0900-\u097F]/.test(captionResult.rawText);
+          const [enriched, translatedSegments] = await Promise.all([
+            geminiService.enrichTranscript(captionResult.rawText, meta.title),
+            captionResult.segments && captionResult.segments.length > 0 && hasDev
+              ? geminiService.translateSegments(captionResult.segments)
+              : Promise.resolve(captionResult.segments),
+          ]);
 
           const transcriptDoc = await Transcript.create({
             sourcePlatform: 'YOUTUBE',
@@ -74,7 +80,7 @@ export function createTranscriptRouter(): Router {
             creatorName: meta.creatorName,
             thumbnailUrl: meta.thumbnailUrl,
             durationSeconds: captionResult.durationSeconds,
-            segments: captionResult.segments,
+            segments: translatedSegments,
             cleanText: enriched.cleanText,
             summary: enriched.summary,
             keyQuotes: enriched.keyQuotes,
@@ -248,8 +254,14 @@ export function createTranscriptRouter(): Router {
         fs.unlinkSync(file.path);
       }
 
-      // Enrich transcript
-      const enriched = await geminiService.enrichTranscript(rawText, title);
+      // Enrich transcript with translation
+      const hasDev = /[\u0900-\u097F]/.test(rawText);
+      const [enriched, translatedSegments] = await Promise.all([
+        geminiService.enrichTranscript(rawText, title),
+        segments && segments.length > 0 && hasDev
+          ? geminiService.translateSegments(segments)
+          : Promise.resolve(segments),
+      ]);
 
       const transcriptDoc = await Transcript.create({
         sourcePlatform: sourceUrl.includes('instagram.com') ? 'INSTAGRAM' : 'UPLOAD',
@@ -257,7 +269,7 @@ export function createTranscriptRouter(): Router {
         title,
         creatorName,
         durationSeconds: segments.length > 0 ? Math.ceil(segments[segments.length - 1].end) : 0,
-        segments,
+        segments: translatedSegments,
         cleanText: enriched.cleanText,
         summary: enriched.summary,
         keyQuotes: enriched.keyQuotes,

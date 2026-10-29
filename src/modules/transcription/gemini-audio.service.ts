@@ -119,19 +119,23 @@ Strict requirements:
 
       const hasDevanagari = /[\u0900-\u097F]/.test(rawText);
       const hinglishHasDevanagari = /[\u0900-\u097F]/.test(hinglish);
+      const englishHasDevanagari = /[\u0900-\u097F]/.test(english);
 
-      // If english or hinglish failed or came back identical to Hindi rawText, or hinglish contains Devanagari, run dedicated translation
-      if (!english || english === rawText || !hinglish || hinglish === rawText || (hasDevanagari && hinglishHasDevanagari)) {
-        const trans = await this.translateTranscript(rawText);
-        english = english && english !== rawText ? english : trans.english;
-        hinglish = hinglish && !hinglishHasDevanagari ? hinglish : trans.hinglish;
+      // If english or hinglish failed or came back identical to Hindi rawText, or contains Devanagari, run dedicated transliteration/translation
+      if (hasDevanagari) {
+        if (!hinglish || hinglish === rawText || hinglishHasDevanagari) {
+          hinglish = await this.transliterateToHinglish(rawText);
+        }
+        if (!english || english === rawText || englishHasDevanagari) {
+          english = await this.translateToEnglish(rawText);
+        }
       }
 
       return {
         cleanText: {
           original: rawText,
           english: english || rawText,
-          hinglish: hinglish || rawText,
+          hinglish: hinglish || (hasDevanagari ? '' : rawText),
         },
         summary: Array.isArray(parsed.summary) && parsed.summary.length > 0 ? parsed.summary : [rawText.slice(0, 200)],
         keyQuotes: Array.isArray(parsed.keyQuotes) ? parsed.keyQuotes : [],
@@ -148,12 +152,55 @@ Strict requirements:
   }
 
   /**
+   * Dedicated transliteration of Hindi to Roman Hinglish (zero Devanagari)
+   */
+  async transliterateToHinglish(rawText: string): Promise<string> {
+    const ai = await this.getClient();
+    if (!ai || !rawText || !rawText.trim()) return '';
+    try {
+      const prompt = `You are an Indian sports analyst. Transliterate this Hindi text into natural Roman Hinglish (Hindi written in English alphabet letters, popular on Indian sports channels like Sports Tak or Tanmay Bhat).
+Strictly ZERO Devanagari characters allowed.
+Return ONLY the Roman Hinglish text without any explanation or extra symbols:
+${rawText.slice(0, 8000)}`;
+
+      const res = await this.generateWithRetry(ai, { contents: prompt });
+      const text = (res.text || '').trim();
+      return /[\u0900-\u097F]/.test(text) ? '' : text;
+    } catch (err: any) {
+      console.warn(`[GeminiAudioService] transliterateToHinglish failed: ${err.message}`);
+      return '';
+    }
+  }
+
+  /**
+   * Dedicated translation of Hindi to pure English
+   */
+  async translateToEnglish(rawText: string): Promise<string> {
+    const ai = await this.getClient();
+    if (!ai || !rawText || !rawText.trim()) return rawText;
+    try {
+      const prompt = `You are an Indian sports analyst. Translate this Hindi text into clean, high-retention English with filler words removed.
+Strictly ZERO Devanagari characters allowed.
+Return ONLY the English translation without any explanation:
+${rawText.slice(0, 8000)}`;
+
+      const res = await this.generateWithRetry(ai, { contents: prompt });
+      const text = (res.text || '').trim();
+      return /[\u0900-\u097F]/.test(text) ? '' : text;
+    } catch (err: any) {
+      console.warn(`[GeminiAudioService] translateToEnglish failed: ${err.message}`);
+      return '';
+    }
+  }
+
+  /**
    * Dedicated translation method using Gemini 3.5 Flash
    */
   async translateTranscript(rawText: string): Promise<{ english: string; hinglish: string }> {
     const ai = await this.getClient();
+    const hasDevanagari = /[\u0900-\u097F]/.test(rawText);
     if (!ai || !rawText || !rawText.trim()) {
-      return { english: rawText, hinglish: rawText };
+      return { english: rawText, hinglish: hasDevanagari ? '' : rawText };
     }
 
     try {
@@ -162,8 +209,8 @@ Strict requirements:
 
 Return strictly valid JSON:
 {
-  "english": "A clean, natural, professional English translation.",
-  "hinglish": "A natural, high-energy Hinglish version written in Roman/English alphabet (Hindi words written in English letters, popular on Indian sports channels like Sports Tak or Cricbuzz). Must NOT be in Devanagari script."
+  "english": "A clean, natural, professional English translation. Strictly zero Devanagari characters.",
+  "hinglish": "A natural, high-energy Hinglish version written in Roman/English alphabet (Hindi words written in English letters, popular on Indian sports channels like Sports Tak or Cricbuzz). Must NOT contain ANY Devanagari script."
 }`;
 
       const res = await this.generateWithRetry(ai, {
@@ -174,13 +221,32 @@ Return strictly valid JSON:
       });
 
       const parsed = JSON.parse(res.text.trim());
+      let eng = parsed.english || '';
+      let hing = parsed.hinglish || '';
+
+      if (hasDevanagari && (/[\u0900-\u097F]/.test(hing) || !hing)) {
+        hing = await this.transliterateToHinglish(rawText);
+      }
+      if (hasDevanagari && (/[\u0900-\u097F]/.test(eng) || !eng)) {
+        eng = await this.translateToEnglish(rawText);
+      }
+
       return {
-        english: parsed.english || rawText,
-        hinglish: parsed.hinglish || rawText,
+        english: eng || rawText,
+        hinglish: hing || (hasDevanagari ? '' : rawText),
       };
     } catch (e: any) {
       console.warn(`[GeminiAudioService] Translation failed: ${e.message}`);
-      return { english: rawText, hinglish: rawText };
+      let fallbackHing = '';
+      let fallbackEng = '';
+      if (hasDevanagari) {
+        fallbackHing = await this.transliterateToHinglish(rawText);
+        fallbackEng = await this.translateToEnglish(rawText);
+      }
+      return {
+        english: fallbackEng || rawText,
+        hinglish: fallbackHing || (hasDevanagari ? '' : rawText),
+      };
     }
   }
 
@@ -269,29 +335,57 @@ Return strictly valid JSON:
         }
       }
 
+      const hasDevanagari = /[\u0900-\u097F]/.test(rawText);
+
       const translatedSegments = (segments || []).map((s, idx) => {
         const t = segMap.get(idx);
+        let eng = (t?.english || s.textEnglish || '').trim();
+        let hing = (t?.hinglish || s.textHinglish || '').trim();
+
+        // If hinglish still has Devanagari, don't use it
+        if (/[\u0900-\u097F]/.test(hing)) hing = '';
+        if (/[\u0900-\u097F]/.test(eng)) eng = '';
+
         return {
           start: s.start,
           end: s.end,
           timestamp: s.timestamp,
           speaker: s.speaker || 'Speaker',
           textOriginal: s.textOriginal,
-          textEnglish: t?.english || s.textEnglish || s.textOriginal,
-          textHinglish: t?.hinglish || s.textHinglish || s.textOriginal,
+          textEnglish: eng || (hasDevanagari ? '' : s.textOriginal),
+          textHinglish: hing || (hasDevanagari ? '' : s.textOriginal),
         };
       });
 
+      let finalEng = (parsed.english || '').trim();
+      let finalHing = (parsed.hinglish || '').trim();
+
+      if (hasDevanagari) {
+        if (!finalHing || /[\u0900-\u097F]/.test(finalHing)) {
+          finalHing = await this.transliterateToHinglish(rawText);
+        }
+        if (!finalEng || /[\u0900-\u097F]/.test(finalEng)) {
+          finalEng = await this.translateToEnglish(rawText);
+        }
+      }
+
       return {
-        english: parsed.english || rawText,
-        hinglish: parsed.hinglish || rawText,
+        english: finalEng || rawText,
+        hinglish: finalHing || (hasDevanagari ? '' : rawText),
         segments: translatedSegments,
       };
     } catch (err: any) {
       console.warn(`[GeminiAudioService] Unified translation failed: ${err.message}`);
+      const hasDevanagari = /[\u0900-\u097F]/.test(rawText);
+      let fallbackHing = '';
+      let fallbackEng = '';
+      if (hasDevanagari) {
+        fallbackHing = await this.transliterateToHinglish(rawText);
+        fallbackEng = await this.translateToEnglish(rawText);
+      }
       return {
-        english: rawText,
-        hinglish: rawText,
+        english: fallbackEng || rawText,
+        hinglish: fallbackHing || (hasDevanagari ? '' : rawText),
         segments: defaultSegments,
       };
     }
@@ -319,15 +413,18 @@ Return strictly valid JSON:
   }>> {
     const ai = await this.getClient();
     if (!ai || !segments || segments.length === 0) {
-      return (segments || []).map((s) => ({
-        start: s.start,
-        end: s.end,
-        timestamp: s.timestamp,
-        speaker: s.speaker || 'Speaker',
-        textOriginal: s.textOriginal,
-        textEnglish: s.textEnglish || s.textOriginal,
-        textHinglish: s.textHinglish || s.textOriginal,
-      }));
+      return (segments || []).map((s) => {
+        const hasDev = /[\u0900-\u097F]/.test(s.textOriginal);
+        return {
+          start: s.start,
+          end: s.end,
+          timestamp: s.timestamp,
+          speaker: s.speaker || 'Speaker',
+          textOriginal: s.textOriginal,
+          textEnglish: s.textEnglish || (hasDev ? '' : s.textOriginal),
+          textHinglish: s.textHinglish || (hasDev ? '' : s.textOriginal),
+        };
+      });
     }
 
     try {
@@ -363,27 +460,37 @@ ${JSON.stringify(input)}`;
 
       return segments.map((s, idx) => {
         const trans = map.get(idx);
+        const hasDev = /[\u0900-\u097F]/.test(s.textOriginal);
+        let eng = (trans?.english || s.textEnglish || '').trim();
+        let hing = (trans?.hinglish || s.textHinglish || '').trim();
+
+        if (/[\u0900-\u097F]/.test(hing)) hing = '';
+        if (/[\u0900-\u097F]/.test(eng)) eng = '';
+
         return {
           start: s.start,
           end: s.end,
           timestamp: s.timestamp,
           speaker: s.speaker || 'Speaker',
           textOriginal: s.textOriginal,
-          textEnglish: trans?.english || s.textEnglish || s.textOriginal,
-          textHinglish: trans?.hinglish || s.textHinglish || s.textOriginal,
+          textEnglish: eng || (hasDev ? '' : s.textOriginal),
+          textHinglish: hing || (hasDev ? '' : s.textOriginal),
         };
       });
     } catch (err: any) {
       console.warn(`[GeminiAudioService] Segment translation failed: ${err.message}`);
-      return segments.map((s) => ({
-        start: s.start,
-        end: s.end,
-        timestamp: s.timestamp,
-        speaker: s.speaker || 'Speaker',
-        textOriginal: s.textOriginal,
-        textEnglish: s.textEnglish || s.textOriginal,
-        textHinglish: s.textHinglish || s.textOriginal,
-      }));
+      return segments.map((s) => {
+        const hasDev = /[\u0900-\u097F]/.test(s.textOriginal);
+        return {
+          start: s.start,
+          end: s.end,
+          timestamp: s.timestamp,
+          speaker: s.speaker || 'Speaker',
+          textOriginal: s.textOriginal,
+          textEnglish: s.textEnglish || (hasDev ? '' : s.textOriginal),
+          textHinglish: s.textHinglish || (hasDev ? '' : s.textOriginal),
+        };
+      });
     }
   }
 
