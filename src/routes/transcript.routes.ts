@@ -27,7 +27,21 @@ export function createTranscriptRouter(): Router {
         return res.status(400).json({ success: false, error: 'A valid video URL is required.' });
       }
 
-      const cleanUrl = url.trim();
+      let cleanUrl = url.trim();
+
+      // Resolve redirect if passed a Google News RSS redirect link
+      if (cleanUrl.includes('news.google.com')) {
+        try {
+          const { GoogleDecoder } = require('google-news-url-decoder');
+          const decoder = new GoogleDecoder();
+          const dec = await decoder.decode(cleanUrl);
+          if (dec && dec.status && dec.decoded_url) {
+            cleanUrl = dec.decoded_url.trim();
+          }
+        } catch (decErr: any) {
+          console.warn('[TranscriptRoutes] Failed to decode Google News redirect URL:', decErr.message);
+        }
+      }
 
       // 1. Check if URL is YouTube (100% free direct subtitle extraction; Supadata is NOT used here)
       const ytVideoId = ytService.extractVideoId(cleanUrl);

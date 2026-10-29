@@ -4,9 +4,13 @@ import { BaseSourceAdapter, ScrapedItem } from './base.adapter';
 import { MonitoredChannel } from '../../models/MonitoredChannel';
 import { isIndiaSpecificSports } from '../research/india-sports-filter';
 
+// Dynamic require to avoid missing types in commonjs
+const { GoogleDecoder } = require('google-news-url-decoder');
+
 export class InstagramSourceAdapter implements BaseSourceAdapter {
   platformName = 'INSTAGRAM' as const;
   private parser: Parser;
+  private decoder: any;
 
   constructor() {
     this.parser = new Parser({
@@ -15,6 +19,7 @@ export class InstagramSourceAdapter implements BaseSourceAdapter {
         'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) ContentGPT/1.0',
       },
     });
+    this.decoder = new GoogleDecoder();
   }
 
   async fetchLatest(limit: number = 15): Promise<ScrapedItem[]> {
@@ -135,9 +140,19 @@ export class InstagramSourceAdapter implements BaseSourceAdapter {
                   continue;
                 }
 
+                let finalUrl = post.link.trim();
+                if (finalUrl.includes('news.google.com')) {
+                  try {
+                    const dec = await this.decoder.decode(finalUrl);
+                    if (dec && dec.status && dec.decoded_url) {
+                      finalUrl = dec.decoded_url.trim();
+                    }
+                  } catch {}
+                }
+
                 results.push({
                   sourcePlatform: 'INSTAGRAM',
-                  sourceUrl: post.link.trim(),
+                  sourceUrl: finalUrl,
                   title: `${ch.channelName}: ${cleanTitle.slice(0, 75)}`,
                   contentSnippet: cleanSnippet || cleanTitle,
                   authorOrChannel: `@${username}`,
