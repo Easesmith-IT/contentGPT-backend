@@ -97,53 +97,22 @@ export function createTranscriptRouter(): Router {
           });
         }
 
-        const meta = await igService.fetchMetadata(cleanUrl, igShortcode);
-        const mediaResolution = await igService.resolveMediaAudioUrl(cleanUrl);
-
-        // If direct stream or Supadata payload was resolved
-        if (!mediaResolution.requiresFallback && mediaResolution.streamUrl) {
-          try {
-            let rawText = '';
-            let segments: any[] = [];
-            let durationSeconds = 0;
-
-            if (mediaResolution.streamUrl.startsWith('supadata:')) {
-              // Parsed from Supadata API
-              const payload = JSON.parse(decodeURIComponent(mediaResolution.streamUrl.replace('supadata:', '')));
-              rawText = payload.content || payload.transcript || '';
-              segments = payload.segments || [];
-              durationSeconds = segments.length > 0 ? Math.ceil(segments[segments.length - 1].end) : 0;
-            } else {
-              // Direct video/audio stream URL -> Download to temp file & transcribe via Gemini
-              const tmpPath = await igService.downloadStreamToTempFile(mediaResolution.streamUrl, igShortcode);
-              try {
-                const transResult = await geminiService.transcribeMediaFile(tmpPath, 'video/mp4');
-                rawText = transResult.rawText;
-                segments = transResult.segments;
-                durationSeconds = segments.length > 0 ? Math.ceil(segments[segments.length - 1].end) : 0;
-              } finally {
-                if (fs.existsSync(tmpPath)) {
-                  fs.unlinkSync(tmpPath);
-                }
-              }
-            }
-
-            if (!rawText.trim()) {
-              throw new Error('No speech detected in this Reel audio.');
-            }
-
-            // AI enrichment with Gemini (Hinglish, English, summary, soundbites)
-            const enriched = await geminiService.enrichTranscript(rawText, mediaResolution.title || meta.title);
+        // STEP 1: Attempt direct transcription with Supadata (Primary Provider)
+        try {
+          const supaResult = await igService.transcribeWithSupadata(cleanUrl, igShortcode);
+          if (supaResult && supaResult.rawText.trim()) {
+            // AI enrichment with Gemini (Hinglish, English, summary, quotes, angles)
+            const enriched = await geminiService.enrichTranscript(supaResult.rawText, supaResult.title);
 
             const transcriptDoc = await Transcript.create({
               sourcePlatform: 'INSTAGRAM',
               sourceUrl: cleanUrl,
               videoId: igShortcode,
-              title: mediaResolution.title || meta.title,
-              creatorName: mediaResolution.creatorName || meta.creatorName,
-              thumbnailUrl: mediaResolution.thumbnailUrl || meta.thumbnailUrl,
-              durationSeconds,
-              segments,
+              title: supaResult.title,
+              creatorName: supaResult.creatorName,
+              thumbnailUrl: supaResult.thumbnailUrl,
+              durationSeconds: supaResult.durationSeconds,
+              segments: supaResult.segments,
               cleanText: enriched.cleanText,
               summary: enriched.summary,
               keyQuotes: enriched.keyQuotes,
@@ -155,15 +124,67 @@ export function createTranscriptRouter(): Router {
               success: true,
               data: transcriptDoc,
               cached: false,
-              message: 'Successfully transcribed Instagram Reel with Gemini 3.5 Flash!',
+              message: 'Successfully transcribed Instagram Reel with Supadata & Gemini!',
             });
+          }
+        } catch (supaErr: any) {
+          console.warn('[Supadata Direct Error]', supaErr.message);
+        }
+
+        // STEP 2: Secondary fallback: Direct stream resolution (ultra-igdl / RapidAPI) -> Gemini Multimodal
+        const meta = await igService.fetchMetadata(cleanUrl, igShortcode);
+        const mediaResolution = await igService.resolveMediaAudioUrl(cleanUrl);
+
+        if (!mediaResolution.requiresFallback && mediaResolution.streamUrl) {
+          try {
+            const tmpPath = await igService.downloadStreamToTempFile(mediaResolution.streamUrl, igShortcode);
+            let rawText = '';
+            let segments: any[] = [];
+            let durationSeconds = 0;
+
+            try {
+              const transResult = await geminiService.transcribeMediaFile(tmpPath, 'video/mp4');
+              rawText = transResult.rawText;
+              segments = transResult.segments;
+              durationSeconds = segments.length > 0 ? Math.ceil(segments[segments.length - 1].end) : 0;
+            } finally {
+              if (fs.existsSync(tmpPath)) {
+                fs.unlinkSync(tmpPath);
+              }
+            }
+
+            if (rawText.trim()) {
+              const enriched = await geminiService.enrichTranscript(rawText, mediaResolution.title || meta.title);
+
+              const transcriptDoc = await Transcript.create({
+                sourcePlatform: 'INSTAGRAM',
+                sourceUrl: cleanUrl,
+                videoId: igShortcode,
+                title: mediaResolution.title || meta.title,
+                creatorName: mediaResolution.creatorName || meta.creatorName,
+                thumbnailUrl: mediaResolution.thumbnailUrl || meta.thumbnailUrl,
+                durationSeconds,
+                segments,
+                cleanText: enriched.cleanText,
+                summary: enriched.summary,
+                keyQuotes: enriched.keyQuotes,
+                suggestedAngles: enriched.suggestedAngles,
+                isSaved: false,
+              });
+
+              return res.json({
+                success: true,
+                data: transcriptDoc,
+                cached: false,
+                message: 'Successfully transcribed Instagram Reel with Gemini 3.5 Flash!',
+              });
+            }
           } catch (streamErr: any) {
             console.error('[Instagram Stream Processing Error]', streamErr);
-            // Fall through to upload fallback if stream download/transcription failed
           }
         }
 
-        // When Instagram restricts cloud IP extraction
+        // STEP 3: Fallback notice prompting 1-tap media upload
         return res.status(200).json({
           success: false,
           requiresUploadFallback: true,
@@ -174,7 +195,7 @@ export function createTranscriptRouter(): Router {
             shortcode: igShortcode,
           },
           message:
-            'Instagram restricts direct data-center IP extraction for this Reel without an active session ID. Please use the 1-Tap Audio/Video Upload button below to transcribe it with Gemini 3.5 Flash in seconds!',
+            'Could not extract audio directly from this Instagram link. Please use the 1-Tap Audio/Video Upload button below to transcribe it with Gemini in seconds!',
         });
       }
 

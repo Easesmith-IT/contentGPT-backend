@@ -2,6 +2,7 @@ import axios from 'axios';
 import fs from 'fs';
 import path from 'path';
 import os from 'os';
+import { ITranscriptSegment } from '../../models/Transcript';
 
 export interface InstagramMetadata {
   shortcode: string;
@@ -18,6 +19,15 @@ export interface InstagramResolutionResult {
   thumbnailUrl?: string;
   requiresFallback: boolean;
   error?: string;
+}
+
+export interface SupadataTranscriptResult {
+  rawText: string;
+  segments: ITranscriptSegment[];
+  durationSeconds: number;
+  title: string;
+  creatorName: string;
+  thumbnailUrl: string;
 }
 
 export class InstagramTranscriberService {
@@ -68,17 +78,126 @@ export class InstagramTranscriberService {
   }
 
   /**
-   * Resolve direct media stream URL for the Reel
-   * Tries:
-   * 1. Session ID via ultra-igdl (if INSTAGRAM_SESSION_ID configured)
-   * 2. RapidAPI Social/Instagram Downloader (if RAPIDAPI_KEY is configured & subscribed)
-   * 3. Fallback notice prompting file drop or API key configuration
+   * Primary Provider: Transcribe directly with Supadata API
+   * Handles metadata extraction, sync transcripts, and async polling jobs
+   */
+  async transcribeWithSupadata(url: string, shortcode: string): Promise<SupadataTranscriptResult | null> {
+    const apiKey = process.env.SUPADATA_API_KEY || 'sd_9d41b23cea7c057fea1ef7efaa936d35';
+    if (!apiKey) return null;
+
+    try {
+      const { Supadata } = require('@supadata/js');
+      const client = new Supadata({ apiKey: apiKey.trim() });
+
+      let title = `Instagram Reel (${shortcode})`;
+      let creatorName = 'Instagram Creator';
+      let thumbnailUrl = '';
+      let durationSeconds = 0;
+
+      // 1. Fetch metadata via Supadata or oEmbed
+      try {
+        const meta = await client.metadata({ url });
+        if (meta) {
+          title = meta.title || title;
+          creatorName = meta.author?.displayName || meta.author?.username || creatorName;
+          thumbnailUrl = meta.media?.thumbnailUrl || '';
+          durationSeconds = meta.media?.duration || 0;
+        }
+      } catch {
+        const oembed = await this.fetchMetadata(url, shortcode);
+        title = oembed.title;
+        creatorName = oembed.creatorName;
+        thumbnailUrl = oembed.thumbnailUrl;
+      }
+
+      // 2. Fetch transcript (with auto AI transcription fallback)
+      console.log(`[InstagramTranscriberService] Querying Supadata transcript for ${url}...`);
+      let result = await client.transcript({ url, mode: 'auto' });
+
+      // 3. If Supadata queued an async job, poll until complete
+      if (result && 'jobId' in result && !result.content) {
+        console.log(`[InstagramTranscriberService] Polling Supadata jobId: ${result.jobId}`);
+        for (let i = 0; i < 15; i++) {
+          await new Promise((r) => setTimeout(r, 2000));
+          const statusRes = await client.transcript.getJobStatus(result.jobId);
+          if (statusRes.status === 'completed' || statusRes.content) {
+            result = statusRes;
+            break;
+          }
+          if (statusRes.status === 'failed') {
+            console.warn('[InstagramTranscriberService] Supadata job failed.');
+            return null;
+          }
+        }
+      }
+
+      // 4. Parse content segments
+      const content = result?.content;
+      if (!content || !Array.isArray(content) || content.length === 0) {
+        if (typeof result?.text === 'string' && result.text.trim()) {
+          const rawText = result.text.trim();
+          return {
+            rawText,
+            segments: [
+              {
+                start: 0,
+                end: durationSeconds || 30,
+                timestamp: '00:00',
+                textOriginal: rawText,
+              },
+            ],
+            durationSeconds: durationSeconds || 30,
+            title,
+            creatorName,
+            thumbnailUrl,
+          };
+        }
+        return null;
+      }
+
+      // 5. Convert Supadata offset (ms) to seconds & format timestamps
+      const segments: ITranscriptSegment[] = content.map((item: any) => {
+        const startSec = Math.max(0, (item.offset || 0) / 1000);
+        const durSec = Math.max(0, (item.duration || 0) / 1000);
+        const endSec = startSec + durSec;
+        const m = Math.floor(startSec / 60);
+        const s = Math.floor(startSec % 60);
+        const timestamp = `${m.toString().padStart(2, '0')}:${s.toString().padStart(2, '0')}`;
+        return {
+          start: Math.round(startSec * 10) / 10,
+          end: Math.round(endSec * 10) / 10,
+          timestamp,
+          textOriginal: (item.text || '').trim(),
+        };
+      });
+
+      const rawText = segments.map((s) => s.textOriginal).join(' ');
+      const calculatedDuration =
+        segments.length > 0 ? Math.ceil(segments[segments.length - 1].end) : durationSeconds;
+
+      return {
+        rawText,
+        segments,
+        durationSeconds: calculatedDuration,
+        title,
+        creatorName,
+        thumbnailUrl,
+      };
+    } catch (err: any) {
+      console.warn(`[InstagramTranscriberService] Supadata transcription error: ${err.message}`);
+      return null;
+    }
+  }
+
+  /**
+   * Secondary Provider: Resolve direct media stream URL for the Reel
+   * Tries session ID via ultra-igdl or RapidAPI
    */
   async resolveMediaAudioUrl(url: string): Promise<InstagramResolutionResult> {
     const shortcode = this.extractShortcode(url) || 'reel';
     const metadata = await this.fetchMetadata(url, shortcode);
 
-    // Strategy 1: Check if INSTAGRAM_SESSION_ID is provided in environment
+    // Strategy 1: Check if INSTAGRAM_SESSION_ID is provided
     const sessionId = process.env.INSTAGRAM_SESSION_ID;
     if (sessionId) {
       try {
@@ -91,7 +210,9 @@ export class InstagramTranscriberService {
 
         const downloadResult = await client.download(url);
         if (downloadResult && downloadResult.media && downloadResult.media.length > 0) {
-          const videoItem = downloadResult.media.find((m: any) => m.type === 'video' || m.url?.includes('.mp4')) || downloadResult.media[0];
+          const videoItem =
+            downloadResult.media.find((m: any) => m.type === 'video' || m.url?.includes('.mp4')) ||
+            downloadResult.media[0];
           if (videoItem && videoItem.url) {
             return {
               streamUrl: videoItem.url,
@@ -103,11 +224,11 @@ export class InstagramTranscriberService {
           }
         }
       } catch (err: any) {
-        console.warn(`[InstagramTranscriberService] ultra-igdl session resolution error: ${err.message}`);
+        console.warn(`[InstagramTranscriberService] ultra-igdl resolution error: ${err.message}`);
       }
     }
 
-    // Strategy 2: Check RapidAPI if configured
+    // Strategy 2: Check RapidAPI
     const rapidKey = process.env.RAPIDAPI_KEY;
     if (rapidKey) {
       try {
@@ -121,7 +242,7 @@ export class InstagramTranscriberService {
           try {
             const res = await axios({
               method: host.includes('social') ? 'POST' : 'GET',
-              url: host.includes('social') 
+              url: host.includes('social')
                 ? `https://${host}/v1/social/autolink`
                 : `https://${host}/download?url=${encodeURIComponent(url)}`,
               headers: {
@@ -143,46 +264,21 @@ export class InstagramTranscriberService {
               };
             }
           } catch {
-            // Continue to next host
+            // Try next
           }
         }
       } catch (err: any) {
-        console.warn(`[InstagramTranscriberService] RapidAPI resolution error: ${err.message}`);
+        console.warn(`[InstagramTranscriberService] RapidAPI error: ${err.message}`);
       }
     }
 
-    // Strategy 3: Supadata API if SUPADATA_API_KEY is configured
-    const supadataKey = process.env.SUPADATA_API_KEY;
-    if (supadataKey) {
-      try {
-        const res = await axios.get(`https://api.supadata.ai/v1/transcript?url=${encodeURIComponent(url)}`, {
-          headers: { 'x-api-key': supadataKey },
-          timeout: 15000,
-        });
-        if (res.data?.content || res.data?.transcript) {
-          // Direct transcript already resolved
-          return {
-            title: metadata.title,
-            creatorName: metadata.creatorName,
-            thumbnailUrl: metadata.thumbnailUrl,
-            requiresFallback: false,
-            // special payload flag
-            streamUrl: `supadata:${encodeURIComponent(JSON.stringify(res.data))}`,
-          };
-        }
-      } catch (err: any) {
-        console.warn(`[InstagramTranscriberService] Supadata error: ${err.message}`);
-      }
-    }
-
-    // Strategy 4: Fallback required
     return {
       requiresFallback: true,
       title: metadata.title,
       creatorName: metadata.creatorName,
       thumbnailUrl: metadata.thumbnailUrl,
       error:
-        'Instagram restricts unauthenticated cloud IP scraping. Please upload the Reel video/audio below (or add INSTAGRAM_SESSION_ID to .env) to transcribe directly.',
+        'Instagram restricts unauthenticated data-center extraction. Please drop the Reel video/audio below to transcribe in seconds.',
     };
   }
 
